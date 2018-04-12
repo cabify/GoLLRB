@@ -24,8 +24,9 @@ type LLRB struct {
 
 type Node struct {
 	Item
-	Left, Right *Node // Pointers to left and right child nodes
-	Black       bool  // If set, the color of the link (incoming from the parent) is black
+	Left, Right   *Node // Pointers to left and right child nodes
+	NLeft, NRight int
+	Black         bool // If set, the color of the link (incoming from the parent) is black
 	// In the LLRB, new nodes are always red, hence the zero-value for node
 }
 
@@ -150,67 +151,76 @@ func (t *LLRB) InsertNoReplaceBulk(items ...Item) {
 	}
 }
 
-// ReplaceOrInsert inserts item into the tree. If an existing
-// element has the same order, it is removed from the tree and returned.
-func (t *LLRB) ReplaceOrInsert(item Item) Item {
+// ReplaceOrInsert inserts item into the tree. If an existing element has the
+// same order, it is removed from the tree and returned. Returns the replaced
+// item, if any, and the item's position from the smallest item in the tree.
+func (t *LLRB) ReplaceOrInsert(item Item) (Item, int) {
 	if item == nil {
 		panic("inserting nil item")
 	}
 	var replaced Item
-	t.root, replaced = t.replaceOrInsert(t.root, item)
+	var pos int
+	t.root, replaced, pos = t.replaceOrInsert(t.root, item, 0)
 	t.root.Black = true
 	if replaced == nil {
 		t.count++
 	}
-	return replaced
+	return replaced, pos
 }
 
-func (t *LLRB) replaceOrInsert(h *Node, item Item) (*Node, Item) {
+func (t *LLRB) replaceOrInsert(h *Node, item Item, n int) (*Node, Item, int) {
 	if h == nil {
-		return newNode(item), nil
+		return newNode(item), nil, n
 	}
 
 	h = walkDownRot23(h)
 
 	var replaced Item
+	var pos int
 	if less(item, h.Item) { // BUG
-		h.Left, replaced = t.replaceOrInsert(h.Left, item)
+		h.Left, replaced, pos = t.replaceOrInsert(h.Left, item, n)
 	} else if less(h.Item, item) {
-		h.Right, replaced = t.replaceOrInsert(h.Right, item)
+		h.Right, replaced, pos = t.replaceOrInsert(h.Right, item, n+1+h.NLeft)
 	} else {
-		replaced, h.Item = h.Item, item
+		replaced, h.Item, pos = h.Item, item, n
 	}
 
 	h = walkUpRot23(h)
 
-	return h, replaced
+	return h, replaced, pos
 }
 
-// InsertNoReplace inserts item into the tree. If an existing
-// element has the same order, both elements remain in the tree.
-func (t *LLRB) InsertNoReplace(item Item) {
+// InsertNoReplace inserts item into the tree. If an existing element has the
+// same order, both elements remain in the tree. Returns the position of the
+// inserted item from the smallest item in the tree.
+func (t *LLRB) InsertNoReplace(item Item) int {
 	if item == nil {
 		panic("inserting nil item")
 	}
-	t.root = t.insertNoReplace(t.root, item)
+	var pos int
+	t.root, pos = t.insertNoReplace(t.root, item, 0)
 	t.root.Black = true
 	t.count++
+	return pos
 }
 
-func (t *LLRB) insertNoReplace(h *Node, item Item) *Node {
+func (t *LLRB) insertNoReplace(h *Node, item Item, n int) (*Node, int) {
 	if h == nil {
-		return newNode(item)
+		return newNode(item), n
 	}
 
 	h = walkDownRot23(h)
 
+	var pos int
 	if less(item, h.Item) {
-		h.Left = t.insertNoReplace(h.Left, item)
+		h.Left, pos = t.insertNoReplace(h.Left, item, n)
+		h.NLeft++
 	} else {
-		h.Right = t.insertNoReplace(h.Right, item)
+		h.Right, pos = t.insertNoReplace(h.Right, item, n+1+h.NLeft)
+		h.NRight++
 	}
 
-	return walkUpRot23(h)
+	return walkUpRot23(h), pos
 }
 
 // Rotation driver routines for 2-3 algorithm
@@ -284,6 +294,9 @@ func deleteMin(h *Node) (*Node, Item) {
 
 	var deleted Item
 	h.Left, deleted = deleteMin(h.Left)
+	if deleted != nil {
+		h.NLeft--
+	}
 
 	return fixUp(h), deleted
 }
@@ -317,44 +330,51 @@ func deleteMax(h *Node) (*Node, Item) {
 	}
 	var deleted Item
 	h.Right, deleted = deleteMax(h.Right)
+	if deleted != nil {
+		h.NRight--
+	}
 
 	return fixUp(h), deleted
 }
 
-// Delete deletes an item from the tree whose key equals key.
-// The deleted item is return, otherwise nil is returned.
-func (t *LLRB) Delete(key Item) Item {
-	var deleted Item
-	t.root, deleted = t.delete(t.root, key)
+// Delete deletes an item from the tree whose key equals key. Returns the
+// deleted item, if any matches, and its position from the smallest item in the
+// tree.
+func (t *LLRB) Delete(key Item) (deleted Item, pos int) {
+	t.root, deleted, pos = t.delete(t.root, key, 0)
 	if t.root != nil {
 		t.root.Black = true
 	}
 	if deleted != nil {
 		t.count--
 	}
-	return deleted
+	return deleted, pos
 }
 
-func (t *LLRB) delete(h *Node, item Item) (*Node, Item) {
+func (t *LLRB) delete(h *Node, item Item, n int) (*Node, Item, int) {
 	var deleted Item
 	if h == nil {
-		return nil, nil
+		return nil, nil, n
 	}
+	var pos int
 	if less(item, h.Item) {
 		if h.Left == nil { // item not present. Nothing to delete
-			return h, nil
+			return h, nil, -1
 		}
 		if !isRed(h.Left) && !isRed(h.Left.Left) {
 			h = moveRedLeft(h)
 		}
-		h.Left, deleted = t.delete(h.Left, item)
+		h.Left, deleted, pos = t.delete(h.Left, item, n)
+		if deleted != nil {
+			h.NLeft--
+		}
 	} else {
 		if isRed(h.Left) {
 			h = rotateRight(h)
 		}
 		// If @item equals @h.Item and no right children at @h
 		if !less(h.Item, item) && h.Right == nil {
-			return nil, h.Item
+			return nil, h.Item, n + h.NLeft
 		}
 		// PETAR: Added 'h.Right != nil' below
 		if h.Right != nil && !isRed(h.Right) && !isRed(h.Right.Left) {
@@ -367,13 +387,16 @@ func (t *LLRB) delete(h *Node, item Item) (*Node, Item) {
 			if subDeleted == nil {
 				panic("logic")
 			}
-			deleted, h.Item = h.Item, subDeleted
+			deleted, h.Item, pos = h.Item, subDeleted, n+h.NLeft
 		} else { // Else, @item is bigger than @h.Item
-			h.Right, deleted = t.delete(h.Right, item)
+			h.Right, deleted, pos = t.delete(h.Right, item, n+1+h.NLeft)
+		}
+		if deleted != nil {
+			h.NRight--
 		}
 	}
 
-	return fixUp(h), deleted
+	return fixUp(h), deleted, pos
 }
 
 // Internal node manipulation routines
@@ -396,6 +419,10 @@ func rotateLeft(h *Node) *Node {
 	x.Left = h
 	x.Black = h.Black
 	h.Black = false
+
+	h.NRight = h.Right.Len()
+	x.NLeft = x.Left.Len()
+
 	return x
 }
 
@@ -408,7 +435,18 @@ func rotateRight(h *Node) *Node {
 	x.Right = h
 	x.Black = h.Black
 	h.Black = false
+
+	h.NLeft = h.Left.Len()
+	x.NRight = x.Right.Len()
+
 	return x
+}
+
+func (h *Node) Len() int {
+	if h == nil {
+		return 0
+	}
+	return h.NLeft + 1 + h.NRight
 }
 
 // REQUIRE: Left and Right children must be present
